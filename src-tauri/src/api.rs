@@ -66,7 +66,10 @@ pub async fn load_month(
             let _ = write_cache(app, &filename, &text);
             Ok(text)
         }
-        Err(err) => read_cache(app, &filename).ok_or(err),
+        Err(err) => {
+            println!("[jadwal-sholat] fetch {url} gagal: {err}");
+            read_cache(app, &filename).ok_or(err)
+        }
     }
 }
 

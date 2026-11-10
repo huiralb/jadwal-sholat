@@ -1,10 +1,10 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod api;
 mod praytimes;
+mod scheduler;
 mod store;
 mod tray;
 
-use chrono::{Datelike, Duration};
 use tauri::Manager;
 
 use crate::praytimes::{Kota, Settings, TodaySchedule};
@@ -30,35 +30,7 @@ fn set_setting(
 
 #[tauri::command]
 async fn get_today_schedule(app: tauri::AppHandle) -> Result<TodaySchedule, String> {
-    let settings = store::load(&app);
-    let kota_id = settings.kota_id.ok_or("lokasi belum dipilih")?;
-    let today = chrono::Local::now().date_naive();
-    let (year, month) = (today.year() as u32, today.month());
-
-    let raw = api::load_month(&app, &kota_id, year, month).await?;
-    let body = praytimes::parse_month(&raw).map_err(|e| e.to_string())?;
-    let kota_nama = settings
-        .kota_nama
-        .unwrap_or_else(|| body.lokasi.clone());
-    let today_str = today.format("%Y-%m-%d").to_string();
-    let mut sched = praytimes::today_schedule(&body, &kota_nama, &today_str)
-        .ok_or_else(|| "jadwal hari ini tidak tersedia".to_string())?;
-
-    if sched.tomorrow_subuh.is_none() {
-        // Hari terakhir bulan ini: Subuh besok ada di data bulan berikutnya.
-        let tomorrow_str = (today + Duration::days(1)).format("%Y-%m-%d").to_string();
-        let (ny, nm) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
-        if let Ok(next_raw) = api::load_month(&app, &kota_id, ny, nm).await {
-            if let Ok(next_body) = praytimes::parse_month(&next_raw) {
-                sched.tomorrow_subuh = next_body
-                    .jadwal
-                    .iter()
-                    .find(|d| d.date == tomorrow_str)
-                    .map(|d| d.subuh.clone());
-            }
-        }
-    }
-    Ok(sched)
+    scheduler::current_schedule(&app).await
 }
 
 #[tauri::command]
@@ -86,6 +58,7 @@ pub fn run() {
         ])
         .setup(|app| {
             tray::setup(app.handle())?;
+            scheduler::spawn(app.handle().clone());
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
