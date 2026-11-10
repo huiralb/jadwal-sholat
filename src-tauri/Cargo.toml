@@ -1,8 +1,8 @@
 [package]
 name = "jadwal-sholat"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Jadwal sholat Indonesia di system tray — panel minimalis, notifikasi waktu sholat, jadwal Kemenag offline."
+authors = ["ir"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
