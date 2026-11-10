@@ -31,7 +31,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "description": "Jadwal sholat Indonesia di system tray — panel minimalis, notifikasi waktu sholat, jadwal Kemenag offline.",
+    "shortDescription": "Jadwal sholat Indonesia di system tray dengan notifikasi waktu sholat",
+    "longDescription": "Panel minimalis di tray: jadwal sholat Kemenag (myquran), countdown ke sholat berikutnya, notifikasi senyap, cache offline, autostart opsional.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
