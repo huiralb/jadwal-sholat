@@ -6,8 +6,28 @@ mod store;
 mod tray;
 
 use tauri::Manager;
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::praytimes::{Kota, Settings, TodaySchedule};
+
+/// Terapkan keputusan autostart ke OS (idempotent).
+fn apply_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let plugin = app.autolaunch();
+    if enabled {
+        plugin.enable()
+    } else {
+        plugin.disable()
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// Simpan + terapkan + sinkronkan centang menu tray.
+fn set_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    store::set(app, "autostart", serde_json::Value::Bool(enabled))?;
+    apply_autostart(app, enabled)?;
+    tray::sync_autostart_checked(enabled);
+    Ok(())
+}
 
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
@@ -25,6 +45,12 @@ fn set_setting(
     key: String,
     value: serde_json::Value,
 ) -> Result<(), String> {
+    if key == "autostart" {
+        let enabled = value
+            .as_bool()
+            .ok_or_else(|| "nilai autostart harus boolean".to_string())?;
+        return set_autostart(&app, enabled);
+    }
     store::set(&app, &key, value)
 }
 
@@ -58,13 +84,22 @@ pub fn run() {
         ])
         .setup(|app| {
             tray::setup(app.handle())?;
+            // Rekonsiliasi: store = sumber kebenaran autostart.
+            if let Err(e) = apply_autostart(app.handle(), store::load(app.handle()).autostart) {
+                println!("[jadwal-sholat] autostart gagal: {e}");
+            }
             scheduler::spawn(app.handle().clone());
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => tray::open_panel(app, "jadwal"),
             "settings" => tray::open_panel(app, "settings"),
-            "autostart" => {} // dihubungkan pada Task 7
+            "autostart" => {
+                let next = !store::load(app).autostart;
+                if let Err(e) = set_autostart(app, next) {
+                    println!("[jadwal-sholat] autostart gagal: {e}");
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         })

@@ -10,6 +10,15 @@ const GAP: f64 = 8.0;
 const TRAY_FALLBACK: (f64, f64, f64, f64) = (0.0, 0.0, 24.0, 24.0);
 
 static LAST_ICON: std::sync::Mutex<Option<(f64, f64, f64, f64)>> = std::sync::Mutex::new(None);
+static AUTOSTART_ITEM: std::sync::OnceLock<CheckMenuItem<tauri::Wry>> =
+    std::sync::OnceLock::new();
+
+/// Sinkronkan centang menu "Autostart" dengan keadaan store.
+pub fn sync_autostart_checked(checked: bool) {
+    if let Some(item) = AUTOSTART_ITEM.get() {
+        let _ = item.set_checked(checked);
+    }
+}
 
 /// Posisi panel (physical px) relatif ikon tray, edge kanan panel disejajarkan
 /// dengan edge kanan ikon; terbuka di atas ikon bila tray di separuh bawah layar,
@@ -40,10 +49,11 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         "autostart",
         "Autostart",
         true,
-        false,
+        crate::store::load(app).autostart,
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "Keluar", true, None::<&str>)?;
+    let _ = AUTOSTART_ITEM.set(autostart.clone());
     let menu = MenuBuilder::new(app)
         .item(&open)
         .item(&settings)

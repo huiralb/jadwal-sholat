@@ -158,7 +158,7 @@ function bindEvents(): void {
   });
 }
 
-async function init(): Promise<void> {
+async function syncFromBackend(): Promise<void> {
   try {
     settings = await getSettings();
   } catch {
@@ -167,6 +167,10 @@ async function init(): Promise<void> {
   toggleNotifikasi.checked = settings?.notifikasi ?? true;
   toggleAutostart.checked = settings?.autostart ?? false;
   kotaTerpilih.textContent = settings?.kotaNama ?? "";
+}
+
+async function init(): Promise<void> {
+  await syncFromBackend();
 
   bindEvents();
 
@@ -176,6 +180,15 @@ async function init(): Promise<void> {
   } else {
     setView("pengaturan");
   }
+
+  // Panel ditampilkan ulang (tray/menu) → tarik state terbaru, termasuk
+  // perubahan yang dibuat lewat menu tray selama panel tersembunyi.
+  window.addEventListener("focus", () => {
+    void (async () => {
+      await syncFromBackend();
+      if (view === "jadwal") await refresh();
+    })();
+  });
 
   window.setInterval(() => {
     if (view === "jadwal") renderJadwal(new Date());
