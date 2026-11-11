@@ -30,6 +30,9 @@ const kotaHasil = $("#kota-hasil");
 const kotaTerpilih = $("#kota-terpilih");
 const toggleNotifikasi = $<HTMLInputElement>("#toggle-notifikasi");
 const toggleAutostart = $<HTMLInputElement>("#toggle-autostart");
+const monitorDropdown = $("#monitor-dropdown");
+const monitorValue = $("#monitor-value");
+const monitorMenu = $("#monitor-menu");
 const simpanError = $("#simpan-error");
 
 function tampilkanError(pesan: string): void {
@@ -155,6 +158,28 @@ function simpanToggle(key: "notifikasi" | "autostart", value: boolean): void {
     });
 }
 
+function renderMonitor(value: "all" | "primary"): void {
+  monitorValue.textContent =
+    value === "primary" ? "Monitor utama (ikon tray)" : "Semua monitor";
+  monitorMenu.querySelectorAll("li").forEach((opt) => {
+    opt.classList.toggle("aktif", opt.dataset.value === value);
+  });
+}
+
+function simpanMonitor(value: "all" | "primary"): void {
+  const sebelum = settings?.notifikasiMonitor ?? "all";
+  if (settings) settings.notifikasiMonitor = value;
+  renderMonitor(value);
+  setSetting("notifikasiMonitor", value)
+    .then(bersihkanError)
+    .catch(() => {
+      // Gagal menyimpan: kembalikan state lokal agar UI tidak berbohong.
+      if (settings) settings.notifikasiMonitor = sebelum;
+      renderMonitor(settings?.notifikasiMonitor ?? "all");
+      tampilkanError("Gagal menyimpan pengaturan.");
+    });
+}
+
 function bindEvents(): void {
   let timer: number | undefined;
   kotaInput.addEventListener("input", () => {
@@ -164,6 +189,31 @@ function bindEvents(): void {
   toggleNotifikasi.addEventListener("change", () =>
     simpanToggle("notifikasi", toggleNotifikasi.checked),
   );
+  const tutupMenuMonitor = (): void => {
+    monitorMenu.classList.add("hidden");
+    monitorDropdown.setAttribute("aria-expanded", "false");
+  };
+  monitorDropdown.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const terbuka = !monitorMenu.classList.contains("hidden");
+    monitorMenu.classList.toggle("hidden", terbuka);
+    monitorDropdown.setAttribute("aria-expanded", String(!terbuka));
+  });
+  monitorMenu.addEventListener("click", (e) => {
+    const value = (e.target as HTMLElement).closest<HTMLElement>("li")?.dataset.value;
+    if (value === "all" || value === "primary") {
+      simpanMonitor(value);
+      tutupMenuMonitor();
+    }
+  });
+  monitorDropdown.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") tutupMenuMonitor();
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      monitorDropdown.click();
+    }
+  });
+  document.addEventListener("click", tutupMenuMonitor);
   toggleAutostart.addEventListener("change", () =>
     simpanToggle("autostart", toggleAutostart.checked),
   );
@@ -172,7 +222,11 @@ function bindEvents(): void {
   $("#btn-keluar").addEventListener("click", () => void quitApp());
 
   void listen<string>("open-view", (e) => {
-    setView(e.payload === "settings" ? "pengaturan" : "jadwal");
+    tutupMenuMonitor();
+    // Halaman jadwal hanya bermakna bila lokasi sudah dipilih (seperti init).
+    setView(
+      e.payload === "settings" || !settings?.kotaId ? "pengaturan" : "jadwal",
+    );
     if (view === "jadwal") void refresh();
   });
 }
@@ -185,6 +239,7 @@ async function syncFromBackend(): Promise<void> {
   }
   toggleNotifikasi.checked = settings?.notifikasi ?? true;
   toggleAutostart.checked = settings?.autostart ?? false;
+  renderMonitor(settings?.notifikasiMonitor ?? "all");
   kotaTerpilih.textContent = settings?.kotaNama ?? "";
 }
 

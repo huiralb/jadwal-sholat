@@ -27,4 +27,10 @@ export default defineConfig(() => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    // Dua halaman: panel utama + jendela notifikasi.
+    rollupOptions: {
+      input: ["index.html", "notif.html"],
+    },
+  },
 }));

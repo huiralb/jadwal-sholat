@@ -3,12 +3,13 @@ mod api;
 mod praytimes;
 mod scheduler;
 mod store;
+mod toast;
 mod tray;
 
 use tauri::Manager;
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::praytimes::{Kota, Settings, TodaySchedule};
+use crate::praytimes::{Kota, NotifikasiMonitor, Settings, TodaySchedule};
 
 /// Terapkan keputusan autostart ke OS (idempotent).
 fn apply_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
@@ -51,6 +52,18 @@ fn set_setting(
             .ok_or_else(|| "nilai autostart harus boolean".to_string())?;
         return set_autostart(&app, enabled);
     }
+    if key == "notifikasiMonitor" {
+        let mode: NotifikasiMonitor = serde_json::from_value(value.clone())
+            .map_err(|_| "nilai notifikasiMonitor harus all/primary".to_string())?;
+        store::set(&app, &key, value)?;
+        if mode.is_primary() {
+            // Halaman toast dimuat sekali di awal agar siap sebelum notifikasi pertama.
+            if let Err(e) = toast::ensure_window(&app) {
+                println!("[jadwal-sholat] jendela notifikasi gagal: {e}");
+            }
+        }
+        return Ok(());
+    }
     store::set(&app, &key, value)
 }
 
@@ -80,13 +93,21 @@ pub fn run() {
             get_settings,
             set_setting,
             get_today_schedule,
-            search_kota
+            search_kota,
+            toast::get_toast
         ])
         .setup(|app| {
             tray::setup(app.handle())?;
             // Rekonsiliasi: store = sumber kebenaran autostart.
             if let Err(e) = apply_autostart(app.handle(), store::load(app.handle()).autostart) {
                 println!("[jadwal-sholat] autostart gagal: {e}");
+            }
+            // Mode monitor utama: siapkan jendela toast lebih awal agar halaman
+            // sempat dimuat sebelum notifikasi pertama.
+            if store::load(app.handle()).notifikasi_monitor.is_primary() {
+                if let Err(e) = toast::ensure_window(app.handle()) {
+                    println!("[jadwal-sholat] jendela notifikasi gagal: {e}");
+                }
             }
             scheduler::spawn(app.handle().clone());
             Ok(())

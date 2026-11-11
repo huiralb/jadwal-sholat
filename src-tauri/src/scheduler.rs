@@ -5,7 +5,7 @@ use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::praytimes::TodaySchedule;
-use crate::{api, store};
+use crate::{api, store, toast};
 
 fn at(day: chrono::NaiveDate, time: &str) -> Option<DateTime<Local>> {
     let (h, m) = time.split_once(':')?;
@@ -13,48 +13,99 @@ fn at(day: chrono::NaiveDate, time: &str) -> Option<DateTime<Local>> {
     Local.from_local_datetime(&day.and_time(t)).single()
 }
 
-/// Waktu sholat berikutnya setelah `now` (menit :00). Setelah Isya: Subuh
-/// besok bila datanya tersedia; selain itu None.
-pub fn next_notification_at(
-    sched: &TodaySchedule,
-    now: DateTime<Local>,
-) -> Option<DateTime<Local>> {
-    let times = &sched.times;
-    let today = now.date_naive();
-    let order = [
-        times.subuh.as_str(),
-        times.dzuhur.as_str(),
-        times.ashar.as_str(),
-        times.maghrib.as_str(),
-        times.isya.as_str(),
-    ];
-    for time in order {
-        if let Some(dt) = at(today, time) {
-            if dt > now {
-                return Some(dt);
-            }
-        }
-    }
-    let tomorrow = sched.tomorrow_subuh.as_deref()?;
-    at(today + Duration::days(1), tomorrow)
+/// Jenis tembakan notifikasi.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NotifKind {
+    /// 5 menit sebelum waktu sholat.
+    Pengingat,
+    /// Tepat waktu sholat.
+    Waktu,
 }
 
-/// Nama sholat untuk target: cocokkan waktu target dengan daftar hari ini;
-/// target lintas tanggal hanya mungkin Subuh besok.
-pub fn prayer_name_at(sched: &TodaySchedule, target: DateTime<Local>) -> &'static str {
-    let times = [
-        ("Subuh", sched.times.subuh.as_str()),
-        ("Dzuhur", sched.times.dzuhur.as_str()),
-        ("Ashar", sched.times.ashar.as_str()),
-        ("Maghrib", sched.times.maghrib.as_str()),
-        ("Isya", sched.times.isya.as_str()),
-    ];
-    for (name, time) in times {
-        if at(target.date_naive(), time).as_ref() == Some(&target) {
-            return name;
+impl NotifKind {
+    /// Label untuk log: "pengingat " atau "" (waktu sholat).
+    pub fn log_label(self) -> &'static str {
+        match self {
+            NotifKind::Pengingat => "pengingat ",
+            NotifKind::Waktu => "",
         }
     }
-    "Subuh"
+}
+
+/// Satu target notifikasi: kapan ditembak, sholat apa, dan jenisnya.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NotifTarget {
+    pub fire_at: DateTime<Local>,
+    pub prayer_at: DateTime<Local>,
+    pub name: &'static str,
+    pub kind: NotifKind,
+}
+
+/// Pengingat ditembak N menit sebelum waktu sholat.
+pub const PENGINGAT_MENIT: i64 = 5;
+
+/// Target notifikasi berikutnya setelah `now`: pengingat 5 menit sebelum
+/// sholat berikutnya, atau sholat itu sendiri bila pengingatnya sudah lewat.
+/// Setelah Isya: Subuh besok bila datanya tersedia; selain itu None.
+pub fn next_notification(
+    sched: &TodaySchedule,
+    now: DateTime<Local>,
+) -> Option<NotifTarget> {
+    let today = now.date_naive();
+    let times = &sched.times;
+    let mut events: Vec<NotifTarget> = Vec::with_capacity(12);
+    for (name, time) in [
+        ("Subuh", times.subuh.as_str()),
+        ("Dzuhur", times.dzuhur.as_str()),
+        ("Ashar", times.ashar.as_str()),
+        ("Maghrib", times.maghrib.as_str()),
+        ("Isya", times.isya.as_str()),
+    ] {
+        if let Some(prayer_at) = at(today, time) {
+            push_events(&mut events, name, prayer_at, now);
+        }
+    }
+    if let Some(tomorrow) = sched.tomorrow_subuh.as_deref() {
+        if let Some(prayer_at) = at(today + Duration::days(1), tomorrow) {
+            push_events(&mut events, "Subuh", prayer_at, now);
+        }
+    }
+    events.into_iter().min_by_key(|e| e.fire_at)
+}
+
+/// Tambahkan pasangan pengingat (T−5 menit) dan tembakan tepat waktu bila
+/// masih akan datang.
+fn push_events(
+    events: &mut Vec<NotifTarget>,
+    name: &'static str,
+    prayer_at: DateTime<Local>,
+    now: DateTime<Local>,
+) {
+    for (kind, fire_at) in [
+        (
+            NotifKind::Pengingat,
+            prayer_at - Duration::minutes(PENGINGAT_MENIT),
+        ),
+        (NotifKind::Waktu, prayer_at),
+    ] {
+        if fire_at > now {
+            events.push(NotifTarget {
+                fire_at,
+                prayer_at,
+                name,
+                kind,
+            });
+        }
+    }
+}
+
+/// Teks notifikasi: judul sesuai jenis + isi kota & jam sholat.
+pub fn notification_text(ev: &NotifTarget, kota: &str) -> (String, String) {
+    let title = match ev.kind {
+        NotifKind::Pengingat => format!("5 Menit Lagi: {}", ev.name),
+        NotifKind::Waktu => format!("Waktu {}", ev.name),
+    };
+    (title, format!("{kota} • {}", ev.prayer_at.format("%H:%M")))
 }
 
 /// Format tooltip tray sesuai spec: "KOTA YOGYAKARTA — Ashar 14:52".
@@ -107,12 +158,19 @@ pub async fn current_schedule(app: &AppHandle) -> Result<TodaySchedule, String> 
     Ok(sched)
 }
 
+/// Kirim notifikasi lewat jalur sistem (penempatan monitor dipegang desktop).
+fn kirim_sistem(app: &AppHandle, title: &str, body: &str) {
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        println!("[jadwal-sholat] notifikasi gagal: {e}");
+    }
+}
+
 /// Loop notifikasi senyap: poll ≤30 detik agar reset saat settings/lokasi
 /// berubah dan tidak melewati detik pembukaan; tembak tepat pada waktunya.
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_fired: Option<DateTime<Local>> = None;
-        let mut last_logged_target: Option<DateTime<Local>> = None;
+        let mut last_logged_target: Option<NotifTarget> = None;
         let mut last_error: Option<String> = None;
         loop {
             let settings = store::load(&app);
@@ -135,13 +193,14 @@ pub fn spawn(app: AppHandle) {
             };
             let target = sched
                 .as_ref()
-                .and_then(|s| next_notification_at(s, Local::now()));
+                .and_then(|s| next_notification(s, Local::now()));
             if target != last_logged_target {
                 match (&sched, target) {
-                    (Some(s), Some(t)) => println!(
-                        "[jadwal-sholat] target berikutnya: {} {}",
-                        prayer_name_at(s, t),
-                        t.format("%Y-%m-%d %H:%M")
+                    (Some(_), Some(ev)) => println!(
+                        "[jadwal-sholat] target berikutnya: {}{} {}",
+                        ev.kind.log_label(),
+                        ev.name,
+                        ev.fire_at.format("%Y-%m-%d %H:%M")
                     ),
                     _ => println!("[jadwal-sholat] target berikutnya: tidak ada"),
                 }
@@ -149,10 +208,10 @@ pub fn spawn(app: AppHandle) {
                 // Tooltip tray: kota + sholat berikutnya (spec Perilaku tray).
                 if let Some(tray) = app.tray_by_id("main") {
                     let tip = match (&sched, target) {
-                        (Some(s), Some(t)) => tooltip_text(
+                        (Some(s), Some(ev)) => tooltip_text(
                             &s.kota_nama,
-                            prayer_name_at(s, t),
-                            &t.format("%H:%M").to_string(),
+                            ev.name,
+                            &ev.prayer_at.format("%H:%M").to_string(),
                         ),
                         _ => "Jadwal Sholat".to_string(),
                     };
@@ -162,30 +221,33 @@ pub fn spawn(app: AppHandle) {
             let now = Local::now();
 
             match target {
-                Some(t) if (t - now) > Duration::seconds(30) => {
+                Some(ev) if (ev.fire_at - now) > Duration::seconds(30) => {
                     tokio::time::sleep(StdDuration::from_secs(30)).await;
                 }
-                Some(t) => {
-                    let rem = (t - now).to_std().unwrap_or(StdDuration::ZERO);
+                Some(ev) => {
+                    let rem = (ev.fire_at - now).to_std().unwrap_or(StdDuration::ZERO);
                     tokio::time::sleep(rem + StdDuration::from_millis(120)).await;
-                    if notification_due(Local::now(), t, last_fired) {
+                    if notification_due(Local::now(), ev.fire_at, last_fired) {
                         if let Some(s) = &sched {
-                            let name = prayer_name_at(s, t);
                             println!(
-                                "[jadwal-sholat] {} {} — notifikasi dikirim",
-                                name,
-                                t.format("%H:%M")
+                                "[jadwal-sholat] {}{} {} — notifikasi dikirim",
+                                ev.kind.log_label(),
+                                ev.name,
+                                ev.prayer_at.format("%H:%M")
                             );
-                            if let Err(e) = app
-                                .notification()
-                                .builder()
-                                .title(format!("Waktu {name}"))
-                                .body(format!("{} • {}", s.kota_nama, t.format("%H:%M")))
-                                .show()
-                            {
-                                println!("[jadwal-sholat] notifikasi gagal: {e}");
+                            let (title, body) = notification_text(&ev, &s.kota_nama);
+                            if settings.notifikasi_monitor.is_all() {
+                                kirim_sistem(&app, &title, &body);
+                            } else {
+                                // Mode monitor utama: toast milik aplikasi, penempatan dipegang kita.
+                                if let Err(e) = toast::show(&app, &title, &body) {
+                                    println!(
+                                        "[jadwal-sholat] toast gagal: {e} — jatuh ke notifikasi sistem"
+                                    );
+                                    kirim_sistem(&app, &title, &body);
+                                }
                             }
-                            last_fired = Some(t);
+                            last_fired = Some(ev.fire_at);
                         }
                     }
                 }
@@ -223,45 +285,76 @@ mod tests {
     }
 
     #[test]
-    fn before_subuh_targets_subuh_today() {
-        let target = next_notification_at(&sched(Some("04:13")), at(3, 0, 0)).expect("ada");
-        assert_eq!(target, at(4, 12, 0));
+    fn before_subuh_targets_reminder_first() {
+        let ev = next_notification(&sched(Some("04:13")), at(3, 0, 0)).expect("ada");
+        assert_eq!(ev.kind, NotifKind::Pengingat);
+        assert_eq!(ev.name, "Subuh");
+        assert_eq!(ev.fire_at, at(4, 7, 0));
+        assert_eq!(ev.prayer_at, at(4, 12, 0));
     }
 
     #[test]
-    fn between_prayers_targets_next_today() {
-        let target = next_notification_at(&sched(Some("04:13")), at(12, 0, 0)).expect("ada");
-        assert_eq!(target, at(14, 52, 0));
+    fn between_prayers_targets_next_reminder() {
+        let ev = next_notification(&sched(Some("04:13")), at(12, 0, 0)).expect("ada");
+        assert_eq!(ev.kind, NotifKind::Pengingat);
+        assert_eq!(ev.name, "Ashar");
+        assert_eq!(ev.fire_at, at(14, 47, 0));
+        assert_eq!(ev.prayer_at, at(14, 52, 0));
     }
 
     #[test]
-    fn exact_prayer_time_is_already_passed() {
-        let target = next_notification_at(&sched(Some("04:13")), at(14, 52, 0)).expect("ada");
-        assert_eq!(target, at(17, 41, 0));
+    fn reminder_passed_targets_the_prayer_itself() {
+        // 14:50: pengingat Ashar (14:47) sudah lewat → tembakan berikutnya Ashar.
+        let ev = next_notification(&sched(Some("04:13")), at(14, 50, 0)).expect("ada");
+        assert_eq!(ev.kind, NotifKind::Waktu);
+        assert_eq!(ev.name, "Ashar");
+        assert_eq!(ev.fire_at, at(14, 52, 0));
     }
 
     #[test]
-    fn after_isya_targets_tomorrow_subuh() {
-        let target = next_notification_at(&sched(Some("04:13")), at(19, 30, 0)).expect("ada");
-        assert_eq!(target.hour(), 4);
-        assert_eq!(target.minute(), 13);
-        assert_eq!(target.day(), 11);
+    fn exact_prayer_time_targets_next_reminder() {
+        let ev = next_notification(&sched(Some("04:13")), at(14, 52, 0)).expect("ada");
+        assert_eq!(ev.kind, NotifKind::Pengingat);
+        assert_eq!(ev.name, "Maghrib");
+        assert_eq!(ev.fire_at, at(17, 36, 0));
+        assert_eq!(ev.prayer_at, at(17, 41, 0));
+    }
+
+    #[test]
+    fn after_isya_targets_tomorrow_subuh_reminder() {
+        let ev = next_notification(&sched(Some("04:13")), at(19, 30, 0)).expect("ada");
+        assert_eq!(ev.kind, NotifKind::Pengingat);
+        assert_eq!(ev.name, "Subuh");
+        assert_eq!(ev.fire_at.hour(), 4);
+        assert_eq!(ev.fire_at.minute(), 8);
+        assert_eq!(ev.fire_at.day(), 11);
+        assert_eq!(ev.prayer_at.day(), 11);
     }
 
     #[test]
     fn after_isya_without_tomorrow_is_none() {
-        assert!(next_notification_at(&sched(None), at(19, 30, 0)).is_none());
+        assert!(next_notification(&sched(None), at(19, 30, 0)).is_none());
     }
 
     #[test]
-    fn names_target_prayer_for_notification_title() {
+    fn notification_text_follows_kind() {
         let s = sched(Some("04:13"));
-        assert_eq!(prayer_name_at(&s, at(4, 12, 0)), "Subuh");
-        assert_eq!(prayer_name_at(&s, at(14, 52, 0)), "Ashar");
-        assert_eq!(prayer_name_at(&s, at(17, 41, 0)), "Maghrib");
-        // Target besok (lintas tanggal) selalu Subuh.
-        let tomorrow = Local.with_ymd_and_hms(2026, 11, 11, 4, 13, 0).unwrap();
-        assert_eq!(prayer_name_at(&s, tomorrow), "Subuh");
+        let waktu = next_notification(&s, at(14, 50, 0)).expect("ada");
+        assert_eq!(
+            notification_text(&waktu, "KOTA JAKARTA"),
+            (
+                "Waktu Ashar".to_string(),
+                "KOTA JAKARTA • 14:52".to_string()
+            )
+        );
+        let pengingat = next_notification(&s, at(12, 0, 0)).expect("ada");
+        assert_eq!(
+            notification_text(&pengingat, "KOTA JAKARTA"),
+            (
+                "5 Menit Lagi: Ashar".to_string(),
+                "KOTA JAKARTA • 14:52".to_string()
+            )
+        );
     }
 
     #[test]

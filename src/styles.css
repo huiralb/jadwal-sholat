@@ -154,6 +154,68 @@ input[type="text"]:focus {
   border-color: #4a5462;
 }
 
+/* Dropdown pengaturan — dibuat in-panel (bukan select native) agar tidak
+   membuka popup window yang menutup panel dan agar warnanya ikut tema. */
+.dropdown {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px;
+  font-size: 13px;
+  color: #e8eaed;
+  background: #14161b;
+  border: 1px solid #343b46;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dropdown:focus {
+  border-color: #4a5462;
+  outline: none;
+}
+
+.dropdown-caret {
+  color: #9aa3af;
+  font-size: 11px;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #14161b;
+  border: 1px solid #343b46;
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+}
+
+.dropdown-menu.hidden {
+  display: none;
+}
+
+.dropdown-menu li {
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: #c5cbd4;
+  cursor: pointer;
+}
+
+.dropdown-menu li:hover {
+  background: #262b33;
+  color: #e8eaed;
+}
+
+.dropdown-menu li.aktif {
+  color: #e6c46a;
+}
+
 .hasil {
   list-style: none;
   margin: 6px 0 0;
@@ -198,4 +260,27 @@ input[type="text"]:focus {
 
 .error:empty {
   display: none;
+}
+
+/* Jendela notifikasi di monitor utama (mode "primary") */
+body.notif {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100vh;
+  padding: 0 14px;
+  background: #1b1e24;
+  border-left: 3px solid #e6c46a;
+}
+
+.notif-judul {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8eaed;
+}
+
+.notif-isi {
+  font-size: 13px;
+  color: #9aa3af;
+  margin-top: 2px;
 }

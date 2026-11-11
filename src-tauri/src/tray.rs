@@ -83,16 +83,43 @@ pub fn panel_position_multi(
     if monitors.is_empty() {
         return (icon.0, icon.1);
     }
-    let cx = icon.0 + icon.2 / 2.0;
-    let cy = icon.1 + icon.3 / 2.0;
-    let idx = monitors
-        .iter()
-        .position(|(x, y, w, h)| cx >= *x && cx < x + w && cy >= *y && cy < y + h)
-        .unwrap_or(primary.min(monitors.len() - 1));
+    let idx = monitor_index_at(monitors, primary, (icon.0 + icon.2 / 2.0, icon.1 + icon.3 / 2.0));
     let (ox, oy, mw, mh) = monitors[idx];
     let local_icon = (icon.0 - ox, icon.1 - oy, icon.2, icon.3);
     let (lx, ly) = panel_position(local_icon, (mw, mh), panel, gap);
     (ox + lx, oy + ly)
+}
+
+/// Index monitor yang mengandung titik global; titik di luar semua monitor →
+/// monitor `primary`.
+pub fn monitor_index_at(
+    monitors: &[(f64, f64, f64, f64)],
+    primary: usize,
+    point: (f64, f64),
+) -> usize {
+    let (cx, cy) = point;
+    monitors
+        .iter()
+        .position(|(x, y, w, h)| cx >= *x && cx < x + w && cy >= *y && cy < y + h)
+        .unwrap_or(primary.min(monitors.len().saturating_sub(1)))
+}
+
+/// Monitor tujuan notifikasi mode primary: monitor yang mengandung ikon tray
+/// bila sudah pernah diketahui; selain itu monitor `primary`.
+pub fn target_monitor(
+    monitors: &[(f64, f64, f64, f64)],
+    primary: usize,
+    icon: Option<(f64, f64, f64, f64)>,
+) -> usize {
+    match icon {
+        Some((x, y, w, h)) => monitor_index_at(monitors, primary, (x + w / 2.0, y + h / 2.0)),
+        None => primary.min(monitors.len().saturating_sub(1)),
+    }
+}
+
+/// Rect global ikon tray dari klik terakhir (None bila belum pernah ada klik).
+pub fn last_icon() -> Option<(f64, f64, f64, f64)> {
+    LAST_ICON.lock().ok().and_then(|last| *last)
 }
 
 pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -166,7 +193,7 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 /// Daftar monitor (x, y, w, h) global + index primary + skala primary.
-fn monitor_geometry(app: &tauri::AppHandle) -> Option<(Vec<(f64, f64, f64, f64)>, usize, f64)> {
+pub fn monitor_geometry(app: &tauri::AppHandle) -> Option<(Vec<(f64, f64, f64, f64)>, usize, f64)> {
     let monitors: Vec<(f64, f64, f64, f64)> = app
         .available_monitors()
         .unwrap_or_default()
@@ -218,7 +245,7 @@ fn show_panel(app: &tauri::AppHandle) {
         let _ = win.set_focus();
         return;
     };
-    let icon = match LAST_ICON.lock().ok().and_then(|guard| *guard) {
+    let icon = match last_icon() {
         Some(icon) => icon,
         None => {
             // Belum pernah ada klik: pojok kanan bawah monitor primary (global).
@@ -255,6 +282,8 @@ fn toggle_panel(app: &tauri::AppHandle) {
         let _ = win.hide();
     } else {
         show_panel(app);
+        // Klik ikon tray = buka segar dari halaman jadwal (reset view + dropdown).
+        let _ = app.emit("open-view", "jadwal");
     }
 }
 

@@ -5,6 +5,7 @@ export interface Settings {
   kotaId: string | null;
   kotaNama: string | null;
   notifikasi: boolean;
+  notifikasiMonitor: "all" | "primary";
   autostart: boolean;
 }
 

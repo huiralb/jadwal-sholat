@@ -7,12 +7,42 @@ pub struct Kota {
     pub lokasi: String,
 }
 
+/// Monitor tempat notifikasi ditampilkan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifikasiMonitor {
+    /// Notifikasi sistem — penempatan dipegang desktop, muncul di semua monitor.
+    #[default]
+    All,
+    /// Toast milik aplikasi — hanya monitor yang mengandung ikon tray.
+    Primary,
+}
+
+impl NotifikasiMonitor {
+    /// Nilai dari store: selain "primary" dianggap "all" (perilaku lama).
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("primary") => Self::Primary,
+            _ => Self::All,
+        }
+    }
+
+    pub fn is_primary(self) -> bool {
+        matches!(self, Self::Primary)
+    }
+
+    pub fn is_all(self) -> bool {
+        matches!(self, Self::All)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub kota_id: Option<String>,
     pub kota_nama: Option<String>,
     pub notifikasi: bool,
+    pub notifikasi_monitor: NotifikasiMonitor,
     pub autostart: bool,
 }
 
@@ -22,6 +52,7 @@ impl Default for Settings {
             kota_id: None,
             kota_nama: None,
             notifikasi: true,
+            notifikasi_monitor: NotifikasiMonitor::All,
             autostart: false,
         }
     }
@@ -210,6 +241,7 @@ mod tests {
         assert_eq!(s.kota_id, None);
         assert_eq!(s.kota_nama, None);
         assert!(s.notifikasi);
+        assert!(s.notifikasi_monitor.is_all());
         assert!(!s.autostart);
     }
 
@@ -219,5 +251,18 @@ mod tests {
         assert!(v.get("kotaId").is_some(), "kotaId hilang: {v}");
         assert!(v.get("kotaNama").is_some(), "kotaNama hilang: {v}");
         assert!(v.get("kota_id").is_none(), "kota_id tidak boleh bocor: {v}");
+        assert_eq!(
+            v.get("notifikasiMonitor").and_then(|m| m.as_str()),
+            Some("all"),
+            "notifikasiMonitor hilang: {v}"
+        );
+    }
+
+    #[test]
+    fn notifikasi_monitor_parse_defaults_to_all() {
+        assert!(NotifikasiMonitor::parse(None).is_all());
+        assert!(NotifikasiMonitor::parse(Some("all")).is_all());
+        assert!(NotifikasiMonitor::parse(Some("primary")).is_primary());
+        assert!(NotifikasiMonitor::parse(Some("acak")).is_all());
     }
 }

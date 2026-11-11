@@ -39,13 +39,30 @@
         <ul id="kota-hasil" class="hasil"></ul>
       </div>
       <label class="toggle">
-        <span>Notifikasi waktu sholat</span>
-        <input type="checkbox" id="toggle-notifikasi" />
-      </label>
-      <label class="toggle">
         <span>Autostart saat login</span>
         <input type="checkbox" id="toggle-autostart" />
       </label>
+      <label class="toggle">
+        <span>Notifikasi waktu sholat</span>
+        <input type="checkbox" id="toggle-notifikasi" />
+      </label>
+      <div class="field">
+        <label>Tampilkan notifikasi di</label>
+        <div
+          id="monitor-dropdown"
+          class="dropdown"
+          tabindex="0"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+        >
+          <span id="monitor-value" class="dropdown-value">Semua monitor</span>
+          <span class="dropdown-caret" aria-hidden="true">▾</span>
+          <ul id="monitor-menu" class="dropdown-menu hidden" role="listbox">
+            <li data-value="all" role="option">Semua monitor</li>
+            <li data-value="primary" role="option">Monitor utama (ikon tray)</li>
+          </ul>
+        </div>
+      </div>
       <div id="simpan-error" class="error"></div>
     </section>
   </body>
