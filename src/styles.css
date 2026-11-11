@@ -189,3 +189,13 @@ input[type="text"]:focus {
 .toggle input {
   accent-color: #e6c46a;
 }
+
+.error {
+  color: #e07b6a;
+  font-size: 12px;
+  padding-top: 8px;
+}
+
+.error:empty {
+  display: none;
+}

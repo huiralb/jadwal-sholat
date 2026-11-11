@@ -57,6 +57,11 @@ pub fn prayer_name_at(sched: &TodaySchedule, target: DateTime<Local>) -> &'stati
     "Subuh"
 }
 
+/// Format tooltip tray sesuai spec: "KOTA YOGYAKARTA — Ashar 14:52".
+pub fn tooltip_text(kota: &str, prayer: &str, hhmm: &str) -> String {
+    format!("{kota} — {prayer} {hhmm}")
+}
+
 /// True tepat saat `target` tercapai dan belum pernah ditembak untuk target itu.
 pub fn notification_due(
     now: DateTime<Local>,
@@ -132,15 +137,27 @@ pub fn spawn(app: AppHandle) {
                 .as_ref()
                 .and_then(|s| next_notification_at(s, Local::now()));
             if target != last_logged_target {
-                match target {
-                    Some(t) => println!(
+                match (&sched, target) {
+                    (Some(s), Some(t)) => println!(
                         "[jadwal-sholat] target berikutnya: {} {}",
-                        prayer_name_at(sched.as_ref().unwrap(), t),
+                        prayer_name_at(s, t),
                         t.format("%Y-%m-%d %H:%M")
                     ),
-                    None => println!("[jadwal-sholat] target berikutnya: tidak ada"),
+                    _ => println!("[jadwal-sholat] target berikutnya: tidak ada"),
                 }
                 last_logged_target = target;
+                // Tooltip tray: kota + sholat berikutnya (spec Perilaku tray).
+                if let Some(tray) = app.tray_by_id("main") {
+                    let tip = match (&sched, target) {
+                        (Some(s), Some(t)) => tooltip_text(
+                            &s.kota_nama,
+                            prayer_name_at(s, t),
+                            &t.format("%H:%M").to_string(),
+                        ),
+                        _ => "Jadwal Sholat".to_string(),
+                    };
+                    let _ = tray.set_tooltip(Some(tip));
+                }
             }
             let now = Local::now();
 
@@ -159,12 +176,15 @@ pub fn spawn(app: AppHandle) {
                                 name,
                                 t.format("%H:%M")
                             );
-                            let _ = app
+                            if let Err(e) = app
                                 .notification()
                                 .builder()
                                 .title(format!("Waktu {name}"))
                                 .body(format!("{} • {}", s.kota_nama, t.format("%H:%M")))
-                                .show();
+                                .show()
+                            {
+                                println!("[jadwal-sholat] notifikasi gagal: {e}");
+                            }
                             last_fired = Some(t);
                         }
                     }
@@ -242,6 +262,14 @@ mod tests {
         // Target besok (lintas tanggal) selalu Subuh.
         let tomorrow = Local.with_ymd_and_hms(2026, 11, 11, 4, 13, 0).unwrap();
         assert_eq!(prayer_name_at(&s, tomorrow), "Subuh");
+    }
+
+    #[test]
+    fn tooltip_follows_plan_format() {
+        assert_eq!(
+            tooltip_text("KOTA YOGYAKARTA", "Ashar", "14:52"),
+            "KOTA YOGYAKARTA — Ashar 14:52"
+        );
     }
 
     #[test]

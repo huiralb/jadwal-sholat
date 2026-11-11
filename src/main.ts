@@ -30,6 +30,15 @@ const kotaHasil = $("#kota-hasil");
 const kotaTerpilih = $("#kota-terpilih");
 const toggleNotifikasi = $<HTMLInputElement>("#toggle-notifikasi");
 const toggleAutostart = $<HTMLInputElement>("#toggle-autostart");
+const simpanError = $("#simpan-error");
+
+function tampilkanError(pesan: string): void {
+  simpanError.textContent = pesan;
+}
+
+function bersihkanError(): void {
+  simpanError.textContent = "";
+}
 
 let settings: Settings | null = null;
 let schedule: TodaySchedule | null = null;
@@ -37,6 +46,7 @@ let view: "jadwal" | "pengaturan" = "jadwal";
 
 function setView(v: "jadwal" | "pengaturan"): void {
   view = v;
+  bersihkanError();
   viewJadwal.classList.toggle("hidden", v !== "jadwal");
   viewPengaturan.classList.toggle("hidden", v !== "pengaturan");
 }
@@ -116,12 +126,14 @@ async function pilihKota(k: Kota): Promise<void> {
     await setSetting("kotaId", k.id);
     await setSetting("kotaNama", k.lokasi);
   } catch {
+    tampilkanError("Gagal menyimpan lokasi — coba lagi.");
     return;
   }
   if (settings) {
     settings.kotaId = k.id;
     settings.kotaNama = k.lokasi;
   }
+  bersihkanError();
   kotaTerpilih.textContent = k.lokasi;
   kotaHasil.replaceChildren();
   kotaInput.value = "";
@@ -130,10 +142,17 @@ async function pilihKota(k: Kota): Promise<void> {
 }
 
 function simpanToggle(key: "notifikasi" | "autostart", value: boolean): void {
+  const sebelum = settings ? settings[key] : null;
   if (settings) settings[key] = value;
-  setSetting(key, value).catch(() => {
-    // data layer belum siap sampai Task 5
-  });
+  setSetting(key, value)
+    .then(bersihkanError)
+    .catch(() => {
+      // Gagal menyimpan: kembalikan state lokal agar UI tidak berbohong.
+      if (settings && sebelum !== null) settings[key] = sebelum;
+      toggleNotifikasi.checked = settings?.notifikasi ?? true;
+      toggleAutostart.checked = settings?.autostart ?? false;
+      tampilkanError("Gagal menyimpan pengaturan.");
+    });
 }
 
 function bindEvents(): void {

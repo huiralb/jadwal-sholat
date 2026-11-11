@@ -1,6 +1,6 @@
 use tauri::{
     menu::{CheckMenuItem, MenuBuilder, MenuItem},
-    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
 
@@ -18,6 +18,35 @@ pub fn sync_autostart_checked(checked: bool) {
     if let Some(item) = AUTOSTART_ITEM.get() {
         let _ = item.set_checked(checked);
     }
+}
+
+/// Rect ikon dari event. ksni (Linux) selalu mengirim rect kosong dan
+/// menaruh koordinat pada posisi klik; host yang tidak mengirim koordinat
+/// sama sekali (0,0) → asumsi pojok kanan bawah (area tray Cinnamon).
+pub fn icon_rect_from_click(
+    rect_pos: (f64, f64),
+    rect_size: (f64, f64),
+    click: (f64, f64),
+    monitor: (f64, f64),
+) -> (f64, f64, f64, f64) {
+    if rect_size.0 > 0.0 && rect_size.1 > 0.0 {
+        return (rect_pos.0, rect_pos.1, rect_size.0, rect_size.1);
+    }
+    if click.0 > 1.0 || click.1 > 1.0 {
+        return (click.0, click.1, 24.0, 24.0);
+    }
+    (
+        (monitor.0 - 24.0).max(0.0),
+        (monitor.1 - 24.0).max(0.0),
+        24.0,
+        24.0,
+    )
+}
+
+/// Hanya klik kiri pada saat tombol lepas (Up): ksni hanya mengirim Up;
+/// Windows/macOS mengirim Down DAN Up — tanpa filter ini panel toggle dobel.
+pub fn should_handle_click(button: &MouseButton, state: &MouseButtonState) -> bool {
+    *button == MouseButton::Left && *state == MouseButtonState::Up
 }
 
 /// Posisi panel (physical px) relatif ikon tray, edge kanan panel disejajarkan
@@ -71,28 +100,43 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button, rect, .. } = event {
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                position,
+                rect,
+                ..
+            } = event
+            {
+                if !should_handle_click(&button, &button_state) {
+                    return;
+                }
                 let app = tray.app_handle();
-                let scale = app
+                let (mw, mh, scale) = app
                     .get_webview_window("main")
                     .and_then(|w| w.primary_monitor().ok().flatten())
-                    .map(|m| m.scale_factor())
-                    .unwrap_or(1.0);
-                let (px, py) = match rect.position {
-                    tauri::Position::Physical(p) => (p.x as f64, p.y as f64),
-                    tauri::Position::Logical(l) => (l.x * scale, l.y * scale),
+                    .map(|m| {
+                        (
+                            m.size().width as f64,
+                            m.size().height as f64,
+                            m.scale_factor(),
+                        )
+                    })
+                    .unwrap_or((1920.0, 1080.0, 1.0));
+                let (rp, rs) = match (&rect.position, &rect.size) {
+                    (tauri::Position::Physical(p), tauri::Size::Physical(s)) => {
+                        ((p.x as f64, p.y as f64), (s.width as f64, s.height as f64))
+                    }
+                    (tauri::Position::Logical(p), tauri::Size::Logical(s)) => {
+                        ((p.x * scale, p.y * scale), (s.width * scale, s.height * scale))
+                    }
+                    _ => ((0.0, 0.0), (0.0, 0.0)),
                 };
-                let (pw, ph) = match rect.size {
-                    tauri::Size::Physical(s) => (s.width as f64, s.height as f64),
-                    tauri::Size::Logical(s) => (s.width * scale, s.height * scale),
-                };
-                let icon = (px, py, pw, ph);
+                let icon = icon_rect_from_click(rp, rs, (position.x, position.y), (mw, mh));
                 if let Ok(mut last) = LAST_ICON.lock() {
                     *last = Some(icon);
                 }
-                if button == MouseButton::Left {
-                    toggle_panel(app);
-                }
+                toggle_panel(app);
             }
         })
         .build(app)?;
@@ -147,6 +191,38 @@ fn toggle_panel(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::panel_position;
+    use super::{icon_rect_from_click, should_handle_click};
+    use tauri::tray::{MouseButton, MouseButtonState};
+
+    #[test]
+    fn icon_uses_rect_when_backend_provides_it() {
+        let r = icon_rect_from_click((1800.0, 1060.0), (24.0, 24.0), (1805.0, 1065.0), (1920.0, 1080.0));
+        assert_eq!(r, (1800.0, 1060.0, 24.0, 24.0));
+    }
+
+    #[test]
+    fn icon_falls_back_to_click_position_when_rect_empty() {
+        // ksni (Linux): rect selalu default, koordinat ada di posisi klik.
+        let r = icon_rect_from_click((0.0, 0.0), (0.0, 0.0), (1810.0, 1050.0), (1920.0, 1080.0));
+        assert_eq!(r, (1810.0, 1050.0, 24.0, 24.0));
+    }
+
+    #[test]
+    fn icon_falls_back_to_bottom_right_when_host_gives_no_coordinates() {
+        // Host SNI yang tidak mengirim koordinat (0,0) → asumsi area tray kanan-bawah.
+        let r = icon_rect_from_click((0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1920.0, 1080.0));
+        assert_eq!(r, (1896.0, 1056.0, 24.0, 24.0));
+    }
+
+    #[test]
+    fn handles_only_left_click_in_up_state() {
+        // ksni mengirim Up; Windows/macOS mengirim Down DAN Up (wajib filter agar tidak dobel).
+        assert!(should_handle_click(&MouseButton::Left, &MouseButtonState::Up));
+        assert!(!should_handle_click(&MouseButton::Left, &MouseButtonState::Down));
+        assert!(!should_handle_click(&MouseButton::Right, &MouseButtonState::Up));
+        // ksni secondary_activate = tombol tengah; biar menu yang menangani.
+        assert!(!should_handle_click(&MouseButton::Middle, &MouseButtonState::Up));
+    }
 
     const MONITOR: (f64, f64) = (1920.0, 1080.0);
     const PANEL: (f64, f64) = (320.0, 380.0);
