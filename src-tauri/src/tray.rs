@@ -7,7 +7,6 @@ use tauri::{
 pub const PANEL_WIDTH: f64 = 320.0;
 pub const PANEL_HEIGHT: f64 = 380.0;
 const GAP: f64 = 8.0;
-const TRAY_FALLBACK: (f64, f64, f64, f64) = (0.0, 0.0, 24.0, 24.0);
 
 static LAST_ICON: std::sync::Mutex<Option<(f64, f64, f64, f64)>> = std::sync::Mutex::new(None);
 static AUTOSTART_ITEM: std::sync::OnceLock<CheckMenuItem<tauri::Wry>> =
@@ -70,6 +69,32 @@ pub fn panel_position(
     (x, y)
 }
 
+/// Posisi panel dalam koordinat GLOBAL multi-monitor: monitor yang mengandung
+/// ikon (rect global) menjadi acuan, perhitungan lokal memakai `panel_position`,
+/// hasilnya dikembalikan ke koordinat global. Ikon di luar semua monitor →
+/// monitor `primary`.
+pub fn panel_position_multi(
+    monitors: &[(f64, f64, f64, f64)], // (x, y, w, h) global, bisa negatif
+    primary: usize,
+    icon: (f64, f64, f64, f64),
+    panel: (f64, f64),
+    gap: f64,
+) -> (f64, f64) {
+    if monitors.is_empty() {
+        return (icon.0, icon.1);
+    }
+    let cx = icon.0 + icon.2 / 2.0;
+    let cy = icon.1 + icon.3 / 2.0;
+    let idx = monitors
+        .iter()
+        .position(|(x, y, w, h)| cx >= *x && cx < x + w && cy >= *y && cy < y + h)
+        .unwrap_or(primary.min(monitors.len() - 1));
+    let (ox, oy, mw, mh) = monitors[idx];
+    let local_icon = (icon.0 - ox, icon.1 - oy, icon.2, icon.3);
+    let (lx, ly) = panel_position(local_icon, (mw, mh), panel, gap);
+    (ox + lx, oy + ly)
+}
+
 pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Buka Jadwal", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Pengaturan", true, None::<&str>)?;
@@ -112,27 +137,24 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
                     return;
                 }
                 let app = tray.app_handle();
-                let (mw, mh, scale) = app
-                    .get_webview_window("main")
-                    .and_then(|w| w.primary_monitor().ok().flatten())
-                    .map(|m| {
-                        (
-                            m.size().width as f64,
-                            m.size().height as f64,
-                            m.scale_factor(),
-                        )
-                    })
-                    .unwrap_or((1920.0, 1080.0, 1.0));
+                let (monitors, primary, pscale) = monitor_geometry(app)
+                    .unwrap_or((vec![(0.0, 0.0, 1920.0, 1080.0)], 0, 1.0));
+                let (ox, oy, mw, mh) = monitors[primary];
                 let (rp, rs) = match (&rect.position, &rect.size) {
                     (tauri::Position::Physical(p), tauri::Size::Physical(s)) => {
                         ((p.x as f64, p.y as f64), (s.width as f64, s.height as f64))
                     }
                     (tauri::Position::Logical(p), tauri::Size::Logical(s)) => {
-                        ((p.x * scale, p.y * scale), (s.width * scale, s.height * scale))
+                        ((p.x * pscale, p.y * pscale), (s.width * pscale, s.height * pscale))
                     }
                     _ => ((0.0, 0.0), (0.0, 0.0)),
                 };
-                let icon = icon_rect_from_click(rp, rs, (position.x, position.y), (mw, mh));
+                let mut icon = icon_rect_from_click(rp, rs, (position.x, position.y), (mw, mh));
+                if rs == (0.0, 0.0) && position.x <= 1.0 && position.y <= 1.0 {
+                    // Host SNI tidak memberi koordinat → pojok kanan bawah
+                    // monitor primary, dalam koordinat global.
+                    icon = (ox + mw - 24.0, oy + mh - 24.0, 24.0, 24.0);
+                }
                 if let Ok(mut last) = LAST_ICON.lock() {
                     *last = Some(icon);
                 }
@@ -143,12 +165,43 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-fn icon_or_fallback() -> (f64, f64, f64, f64) {
-    LAST_ICON
-        .lock()
+/// Daftar monitor (x, y, w, h) global + index primary + skala primary.
+fn monitor_geometry(app: &tauri::AppHandle) -> Option<(Vec<(f64, f64, f64, f64)>, usize, f64)> {
+    let monitors: Vec<(f64, f64, f64, f64)> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            (
+                m.position().x as f64,
+                m.position().y as f64,
+                m.size().width as f64,
+                m.size().height as f64,
+            )
+        })
+        .collect();
+    if monitors.is_empty() {
+        return None;
+    }
+    let primary_pos = app
+        .primary_monitor()
         .ok()
-        .and_then(|guard| *guard)
-        .unwrap_or(TRAY_FALLBACK)
+        .flatten()
+        .map(|p| (p.position().x as f64, p.position().y as f64));
+    let primary = primary_pos
+        .and_then(|(px, py)| {
+            monitors
+                .iter()
+                .position(|(x, y, _, _)| *x == px && *y == py)
+        })
+        .unwrap_or(0);
+    let scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    Some((monitors, primary, scale))
 }
 
 pub fn open_panel(app: &tauri::AppHandle, view: &str) {
@@ -160,19 +213,36 @@ fn show_panel(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
-    if let Ok(Some(monitor)) = win.primary_monitor() {
-        let sf = monitor.scale_factor();
-        let ms = monitor.size();
-        let icon = icon_or_fallback();
-        let panel = (PANEL_WIDTH * sf, PANEL_HEIGHT * sf);
-        let (x, y) = panel_position(
-            icon,
-            (ms.width as f64, ms.height as f64),
-            panel,
-            GAP * sf,
-        );
-        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-    }
+    let Some((monitors, primary, pscale)) = monitor_geometry(app) else {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    };
+    let icon = match LAST_ICON.lock().ok().and_then(|guard| *guard) {
+        Some(icon) => icon,
+        None => {
+            // Belum pernah ada klik: pojok kanan bawah monitor primary (global).
+            let (ox, oy, mw, mh) = monitors[primary];
+            (ox + mw - 24.0, oy + mh - 24.0, 24.0, 24.0)
+        }
+    };
+    // Skala monitor yang mengandung ikon (physical px).
+    let cx = icon.0 + icon.2 / 2.0;
+    let cy = icon.1 + icon.3 / 2.0;
+    let scale = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .find(|m| {
+            let (x, y) = (m.position().x as f64, m.position().y as f64);
+            let (w, h) = (m.size().width as f64, m.size().height as f64);
+            cx >= x && cx < x + w && cy >= y && cy < y + h
+        })
+        .map(|m| m.scale_factor())
+        .unwrap_or(pscale);
+    let panel = (PANEL_WIDTH * scale, PANEL_HEIGHT * scale);
+    let (x, y) = panel_position_multi(&monitors, primary, icon, panel, GAP * scale);
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = win.show();
     let _ = win.set_focus();
 }
@@ -191,7 +261,7 @@ fn toggle_panel(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::panel_position;
-    use super::{icon_rect_from_click, should_handle_click};
+    use super::{icon_rect_from_click, panel_position_multi, should_handle_click};
     use tauri::tray::{MouseButton, MouseButtonState};
 
     #[test]
@@ -259,5 +329,59 @@ mod tests {
         // Ikon meluber ke luar layar: panel harus di-clamp ke tepi monitor.
         let (_, y) = panel_position((900.0, 100.0, 24.0, 900.0), MONITOR, PANEL, GAP);
         assert_eq!(y, 0.0);
+    }
+
+    // --- Multi-monitor: koordinat ikon bersifat global (virtual desktop) ---
+
+    #[test]
+    fn multi_panel_lands_on_horizontal_secondary_monitor() {
+        // Monitor kanan ber-offset x=1920; panel HARUS di monitor kanan (bukan
+        // ter-clamp ke monitor utama seperti perilaku lama).
+        let monitors = [
+            (0.0, 0.0, 1920.0, 1080.0),
+            (1920.0, 0.0, 1920.0, 1080.0),
+        ];
+        let (x, y) = panel_position_multi(
+            &monitors,
+            0,
+            (1920.0 + 1878.0, 1060.0, 24.0, 24.0),
+            PANEL,
+            GAP,
+        );
+        assert_eq!((x, y), (1920.0 + 1582.0, 672.0));
+    }
+
+    #[test]
+    fn multi_panel_lands_on_left_monitor_with_negative_origin() {
+        let monitors = [
+            (-1920.0, 0.0, 1920.0, 1080.0),
+            (0.0, 0.0, 1920.0, 1080.0),
+        ];
+        let (x, y) = panel_position_multi(&monitors, 1, (-42.0, 1060.0, 24.0, 24.0), PANEL, GAP);
+        assert_eq!((x, y), (-1920.0 + 1582.0, 672.0));
+    }
+
+    #[test]
+    fn multi_panel_lands_on_vertical_monitor_below_primary() {
+        // Tata letak mesin uji: HDMI (0,0), eDP primary (0,1080) bertumpuk.
+        // Ikon di panel bawah eDP → panel harus di eDP (y global 1752),
+        // bukan ter-clamp ke y=700 di monitor HDMI.
+        let monitors = [
+            (0.0, 0.0, 1920.0, 1080.0),
+            (0.0, 1080.0, 1920.0, 1080.0),
+        ];
+        let (x, y) = panel_position_multi(&monitors, 1, (1878.0, 2140.0, 24.0, 24.0), PANEL, GAP);
+        assert_eq!((x, y), (1582.0, 1080.0 + 672.0));
+    }
+
+    #[test]
+    fn multi_unknown_icon_coords_fall_back_to_primary_monitor() {
+        let monitors = [
+            (0.0, 0.0, 1920.0, 1080.0),
+            (1920.0, 0.0, 1920.0, 1080.0),
+        ];
+        // Koordinat di luar semua monitor → pakai monitor primary (index 1).
+        let (x, y) = panel_position_multi(&monitors, 1, (99999.0, 99999.0, 24.0, 24.0), PANEL, GAP);
+        assert_eq!((x, y), (1920.0 + 1600.0, 700.0));
     }
 }
