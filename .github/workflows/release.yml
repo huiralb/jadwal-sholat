@@ -1,0 +1,142 @@
+name: Release
+
+# Rilis otomatis saat tag versi `v*` di-push, dengan guard agar tag selalu
+# cocok dengan versi di package.json, tauri.conf.json, dan Cargo.toml.
+#
+# Cakupan Linux-saja mengikuti plan v1 (packaging Windows/macOS non-goal;
+# "Linux dulu, Windows menyusul"). Saat nanti nambah OS, tinggal tambah
+# entri matrix — lihat pola auresys-vsc untuk opsi serialisasi.
+#
+# Berbeda dengan auresys-vsc (workflow per-OS + serialisasi), aplikasi ini
+# TIDAK memakai plugin updater, jadi:
+#   - Tidak ada latest.json yang bisa saling menimpa antar platform.
+#   - Release dibuat SEKALI di job `release` sebelum build berjalan, sehingga
+#     tidak ada balapan get-lalu-create (422) saat build dijalankan.
+# Karena itu satu workflow sederhana sudah aman.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches project versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          CARGO=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n1)
+          if [ "$PKG" != "$TAG" ] || [ "$CONF" != "$TAG" ] || [ "$CARGO" != "$TAG" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} tidak cocok — package.json=${PKG}, tauri.conf.json=${CONF}, Cargo.toml=${CARGO}"
+            exit 1
+          fi
+          echo "Versi cocok: ${TAG}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} sudah ada — dilewati."
+            exit 0
+          fi
+          cat > notes.md <<'EOF'
+          ## Unduh
+
+          - **Linux** — `*.AppImage` (jalankan `chmod +x` lalu buka) atau `*.deb`
+          EOF
+          EXTRA=()
+          case "$GITHUB_REF_NAME" in
+            *-*) EXTRA+=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Jadwal Sholat ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            "${EXTRA[@]}"
+
+  build:
+    needs: release
+    # Selama release tidak GAGAL (mismatch versi), build tetap jalan —
+    # termasuk saat job `release` dilewati pada workflow_dispatch.
+    if: always() && needs.release.result != 'failure'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: linux-x86_64
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev libssl-dev build-essential curl wget file \
+            libfuse2
+
+      # `bundle.targets` di tauri.conf.json = "all" (termasuk rpm), tapi
+      # rpmbuild tidak ada di runner dan rpm bukan tujuan v1 → batasi eksplisit.
+      - name: Build
+        shell: bash
+        run: npm run tauri -- build --target x86_64-unknown-linux-gnu --bundles deb,appimage
+
+      - name: Upload to GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          files=()
+          while IFS= read -r -d '' f; do
+            files+=("$f")
+          done < <(find src-tauri/target -type f -path '*/release/bundle/*' \
+            -name "*${VERSION}*" \
+            \( -name '*.deb' -o -name '*.AppImage' \) -print0)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::Tidak ada bundle untuk versi ${VERSION}"
+            exit 1
+          fi
+          printf '%s\n' "${files[@]}"
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+
+      - name: Upload bundles (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jadwal-sholat-linux-x86_64
+          if-no-files-found: error
+          path: |
+            src-tauri/target/*/release/bundle/**/*.deb
+            src-tauri/target/*/release/bundle/**/*.AppImage
