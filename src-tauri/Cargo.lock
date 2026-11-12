@@ -1892,6 +1892,8 @@ name = "jadwal-sholat"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "gdkx11",
+ "gtk",
  "reqwest",
  "serde",
  "serde_json",
@@ -1903,6 +1905,7 @@ dependencies = [
  "tauri-plugin-store",
  "tokio",
  "tray-icon",
+ "x11",
 ]
 
 [[package]]

@@ -242,7 +242,8 @@ fn show_panel(app: &tauri::AppHandle) {
     };
     let Some((monitors, primary, pscale)) = monitor_geometry(app) else {
         let _ = win.show();
-        let _ = win.set_focus();
+        mark_panel_shown(&win, None);
+        focus_panel(&win);
         return;
     };
     let icon = match last_icon() {
@@ -271,6 +272,54 @@ fn show_panel(app: &tauri::AppHandle) {
     let (x, y) = panel_position_multi(&monitors, primary, icon, panel, GAP * scale);
     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = win.show();
+    mark_panel_shown(&win, Some((x, y, panel.0, panel.1)));
+    focus_panel(&win);
+}
+
+/// Catat geometri panel untuk pemantau klik global (XRecord). Bila posisi
+/// belum diketahui, ambil dari window setelah di-show.
+fn mark_panel_shown(
+    win: &tauri::WebviewWindow,
+    bounds: Option<(f64, f64, f64, f64)>,
+) {
+    #[cfg(target_os = "linux")]
+    {
+        let (x, y, w, h) = match bounds {
+            Some(b) => b,
+            None => match (win.outer_position(), win.outer_size()) {
+                (Ok(pos), Ok(size)) => (
+                    pos.x as f64,
+                    pos.y as f64,
+                    size.width as f64,
+                    size.height as f64,
+                ),
+                _ => return,
+            },
+        };
+        crate::x11_click::panel_shown(x as i32, y as i32, w as i32, h as i32);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (win, bounds);
+    }
+}
+
+/// Sembunyikan panel + beri tahu pemantau klik bahwa panel sudah tertutup.
+pub fn hide_panel(app: &tauri::AppHandle) {
+    #[cfg(target_os = "linux")]
+    crate::x11_click::panel_hidden();
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+}
+
+/// Fokuskan panel setelah ditampilkan. Di Linux/X11 jangan pakai
+/// `set_focus()` (tao memakai `GDK_CURRENT_TIME`, ditolak Muffin lalu fokus
+/// dikembalikan ke window sebelumnya); gunakan aktivasi EWMH di `x11_focus`.
+fn focus_panel(win: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    crate::x11_focus::focus(win);
+    #[cfg(not(target_os = "linux"))]
     let _ = win.set_focus();
 }
 
@@ -279,7 +328,7 @@ fn toggle_panel(app: &tauri::AppHandle) {
         return;
     };
     if win.is_visible().unwrap_or(false) {
-        let _ = win.hide();
+        hide_panel(app);
     } else {
         show_panel(app);
         // Klik ikon tray = buka segar dari halaman jadwal (reset view + dropdown).

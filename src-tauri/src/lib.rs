@@ -5,8 +5,11 @@ mod scheduler;
 mod store;
 mod toast;
 mod tray;
+#[cfg(target_os = "linux")]
+mod x11_click;
+#[cfg(target_os = "linux")]
+mod x11_focus;
 
-use tauri::Manager;
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::praytimes::{Kota, NotifikasiMonitor, Settings, TodaySchedule};
@@ -98,6 +101,8 @@ pub fn run() {
         ])
         .setup(|app| {
             tray::setup(app.handle())?;
+            #[cfg(target_os = "linux")]
+            x11_click::install(app.handle());
             // Rekonsiliasi: store = sumber kebenaran autostart.
             if let Err(e) = apply_autostart(app.handle(), store::load(app.handle()).autostart) {
                 println!("[jadwal-sholat] autostart gagal: {e}");
@@ -136,9 +141,7 @@ pub fn run() {
         } = event
         {
             if label == "main" {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.hide();
-                }
+                tray::hide_panel(app);
             }
         }
     });
